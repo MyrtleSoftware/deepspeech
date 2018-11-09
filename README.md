@@ -7,7 +7,8 @@ This repository is intended as an evolving baseline for other implementations
 to compare their training performance against.
 
 Current roadmap:
-1. Pre-trained weights for both networks and full performance statistics.
+1. ~Pre-trained weights for both networks and full performance statistics.~
+    - See v0.1 release: https://github.com/MyrtleSoftware/deepspeech/releases/tag/v0.1
 1. Mixed-precision training.
 
 ## Running
