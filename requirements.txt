@@ -3,6 +3,7 @@ librosa
 numpy
 psutil
 pysoundfile
+pytest
 python_speech_features
 requests
 tensorboardX

@@ -50,7 +50,7 @@ sensible defaults. A Deep Speech training run can be started by the following
 command, adding flags as necessary:
 
 ```
-deepspeech ds
+deepspeech ds1
 ```
 
 By default the experimental data and logs are output to

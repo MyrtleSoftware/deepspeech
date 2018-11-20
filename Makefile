@@ -1,5 +1,7 @@
 IMAGE_NAME=deepspeech
-IMAGE_TAG=latest
+
+# use branch name for tag if possible
+IMAGE_TAG=$(shell git symbolic-ref --short -q HEAD || echo 'dev')
 
 build: deps/ctcdecode deps/kenlm deps/warp-ctc
 		sudo docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .

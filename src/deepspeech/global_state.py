@@ -7,7 +7,7 @@ import tensorboardX
 from deepspeech.utils.singleton import Singleton
 
 
-class GlobalState(metaclass=Singleton):
+class GlobalState(metaclass=Singleton, check_args=True):
     """Contains all the global state for a single experiment.
 
     Warning: Global state is an anti-pattern - think before adding attributes!
@@ -26,9 +26,6 @@ class GlobalState(metaclass=Singleton):
             to `exp_dir`.
         step (int): An integer used to denote the current step during a
             training session.
-
-    Raises:
-        FileExistsError: raised if `exp_dir` already exists.
     """
     def __init__(self, exp_dir=None, log_frequency=1):
         if exp_dir is None:

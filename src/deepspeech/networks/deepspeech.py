@@ -51,6 +51,7 @@ class Network(nn.Module):
                 bias = getattr(lstm, name)
                 bias.data[hidden_size:2*hidden_size].fill_(forget_gate_bias)
             for name in ['bias_hh_l0', 'bias_hh_l0_reverse']:
+                bias = getattr(lstm, name)
                 bias.data[hidden_size:2*hidden_size].fill_(0)
         return lstm
 

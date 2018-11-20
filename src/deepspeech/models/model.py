@@ -73,13 +73,16 @@ class Model(LoggerMixin):
                  decoder_cls=None, decoder_kwargs=None, clip_gradients=None):
         self.completed_epochs = 0
 
+        self._optimiser_cls = optimiser_cls
+        self._optimiser_kwargs = optimiser_kwargs
         self._clip_gradients = clip_gradients
 
-        self.network = self._init_network(network)
-        self.decoder = self._init_decoder(decoder_cls, decoder_kwargs)
-        self.optimiser = self._init_optimiser(optimiser_cls, optimiser_kwargs)
-        self.loss = self._init_loss()
-        self._global_state = GlobalState()
+        self._init_network(network)
+        self._init_decoder(decoder_cls, decoder_kwargs)
+        self._init_optimiser()
+        self._init_loss()
+
+        self._global_state = GlobalState.get_or_init_singleton()
 
     def _init_network(self, network):
         if not torch.cuda.is_available():
@@ -89,7 +92,7 @@ class Model(LoggerMixin):
                               'parameters and buffers to the GPU')
             to_cuda(network)
 
-        return network
+        self.network = network
 
     def _init_decoder(self, decoder_cls, decoder_kwargs):
         if decoder_cls is None:
@@ -98,22 +101,28 @@ class Model(LoggerMixin):
         if decoder_kwargs is None:
             decoder_kwargs = copy.copy(self.DEFAULT_DECODER_KWARGS)
 
-        return decoder_cls(**decoder_kwargs)
+        self.decoder = decoder_cls(**decoder_kwargs)
 
-    def _init_optimiser(self, optimiser_cls, optimiser_kwargs):
-        if optimiser_cls is None:
+    def _init_optimiser(self):
+        self.reset_optimiser()
+
+    def reset_optimiser(self):
+        """Assigns a new `self.optimiser` using the current network params."""
+        if self._optimiser_cls is None:
+            self.optimiser = None
             self._logger.debug('No optimiser specified')
             return
 
-        kwargs = optimiser_kwargs or {}
-        opt = optimiser_cls(self.network.parameters(), **kwargs)
+        kwargs = self._optimiser_kwargs or {}
+        opt = self._optimiser_cls(self.network.parameters(), **kwargs)
 
-        return opt
+        self.optimiser = opt
 
     def _init_loss(self):
-        return CTCLoss(blank_index=self.ALPHABET.get_index(self.BLANK_SYMBOL),
-                       size_average=False,
-                       length_average=False)
+        blank_index = self.ALPHABET.get_index(self.BLANK_SYMBOL)
+        self.loss = CTCLoss(blank_index=blank_index,
+                            size_average=False,
+                            length_average=False)
 
     @property
     def transform(self):
@@ -168,6 +177,7 @@ class Model(LoggerMixin):
         self.network.train()
         self._train_log_init()
         epoch_loss = 0.0
+        total_samples = 0
 
         data_iter = iter(loader)   # Explicit creation to log queue sizes.
         for step, ((x, logit_lens), y) in enumerate(data_iter):
@@ -179,6 +189,8 @@ class Model(LoggerMixin):
 
             epoch_loss += batch_loss.item()
 
+            total_samples += len(logit_lens)
+
             self._backward(batch_loss)
 
             self._maybe_clip_gradients()
@@ -187,11 +199,11 @@ class Model(LoggerMixin):
 
             self._train_log_step(step, x, logits, logit_lens, batch_loss.item(), data_iter)  # noqa: E501
 
-            del logits, x, logit_lens, y
-
             self._global_state.step += 1
 
-        self._train_log_end(epoch_loss, total_batches=step+1)
+            del logits, x, logit_lens, y
+
+        self._train_log_end(epoch_loss, total_samples)
         self.completed_epochs += 1
 
     @log_call_info
@@ -227,7 +239,10 @@ class Model(LoggerMixin):
                 total_lab_len += len(act.split())
 
         wer = float(total_lev) / total_lab_len
-        self._logger.debug('wer: %r', wer)
+        self._logger.debug('eval/wer: %r', wer)
+        self._global_state.writer.add_scalar('eval/wer',
+                                             wer, self._global_state.step)
+
         return wer
 
     @log_call_info
@@ -241,23 +256,28 @@ class Model(LoggerMixin):
         self.network.eval()
 
         total_loss = 0.0
+        total_samples = 0
 
-        self._logger.debug('idx,batch_loss')
+        self._logger.debug('idx,batch_mean_sample_loss')
 
         for i, ((x, logit_lens), y) in enumerate(loader):
             with torch.no_grad():   # Ensure the gradient isn't computed.
                 logits = self.network(x)
+
                 batch_loss = self.loss(logits, y, logit_lens).item()
+                batch_samples = len(logit_lens)
+
                 total_loss += batch_loss
+                total_samples += batch_samples
 
-            self._logger.debug('%d,%f', i, batch_loss)
+            self._logger.debug('%d,%f', i, batch_loss / batch_samples)
 
-        mean_loss = total_loss / (i + 1)
-        self._logger.debug('eval/mean_batch_loss: %f', mean_loss)
-        self._global_state.writer.add_scalar('eval/mean_batch_loss',
-                                             mean_loss,
+        mean_sample_loss = total_loss / max(1, total_samples)
+        self._logger.debug('eval/mean_sample_loss: %f', mean_sample_loss)
+        self._global_state.writer.add_scalar('eval/mean_sample_loss',
+                                             mean_sample_loss,
                                              self._global_state.step)
-        return mean_loss
+        return mean_sample_loss
 
     def _train_log_init(self):
         header = 'step,global_step,completed_epochs,sum_logit_lens,loss'
@@ -327,7 +347,7 @@ class Model(LoggerMixin):
             else:
                 # Otherwise the loader iterator reads from a
                 # multiprocessing.SimpleQueue. This has no size function...
-                self.global_state.writer.add_scalar(
+                self._global_state.writer.add_scalar(
                     'train/queue_empty',
                     data_iter.data_queue.empty(),
                     self._global_state.step)
@@ -362,11 +382,11 @@ class Model(LoggerMixin):
                 self._global_state.writer.add_histogram(
                     'gradients/%s' % name, param.grad, self._global_state.step)
 
-    def _train_log_end(self, epoch_loss, total_batches):
-        mean_loss = float(epoch_loss) / total_batches
-        self._logger.debug('train/mean_batch_loss: %r', mean_loss)
+    def _train_log_end(self, epoch_loss, total_samples):
+        mean_sample_loss = float(epoch_loss) / total_samples
+        self._logger.debug('train/mean_sample_loss: %r', mean_sample_loss)
         self._logger.info('epoch %d finished', self.completed_epochs)
 
-        self._global_state.writer.add_scalar('train/mean_batch_loss',
-                                             mean_loss,
+        self._global_state.writer.add_scalar('train/mean_sample_loss',
+                                             mean_sample_loss,
                                              self._global_state.step)

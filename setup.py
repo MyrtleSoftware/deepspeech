@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="deepspeech",
-    version="0.1.0",
+    version="0.2.0",
     description="train and evaluate a DeepSpeech or DeepSpeech2 network",
     author="Sam Davis",
     author_email="sam@myrtle.ai",

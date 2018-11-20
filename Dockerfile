@@ -85,6 +85,7 @@ RUN rm -rf deepspeech
 #- Setup Jupyter ---------------------------------------------------------------
 EXPOSE 9999
 ENV PATH /home/ubuntu/.local/bin:$PATH
+ENV SHELL /bin/bash
 CMD ["jupyter", "lab", \
      "--ip=0.0.0.0",   \
      "--port=9999"]

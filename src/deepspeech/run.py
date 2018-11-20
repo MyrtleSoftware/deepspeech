@@ -14,47 +14,71 @@ from deepspeech.global_state import GlobalState
 from deepspeech.logging import LogLevelAction
 from deepspeech.models import DeepSpeech
 from deepspeech.models import DeepSpeech2
+from deepspeech.models import Model
 
 
-def main():
-    args = get_parser().parse_args()
+MODEL_CHOICES = ['ds1', 'ds2']
 
-    global_state = GlobalState(exp_dir=args.exp_dir)
-    global_state.log_frequency = args.slow_log_freq
 
-    init_logger(args, global_state.exp_dir)
+def main(args=None):
+    """Train and evaluate a DeepSpeech or DeepSpeech2 network.
+
+    Args:
+        args (list str, optional): List of arguments to use. If `None`,
+            defaults to `sys.argv`.
+    """
+    args = get_parser().parse_args(args)
+
+    global_state = GlobalState(exp_dir=args.exp_dir,
+                               log_frequency=args.slow_log_freq)
+
+    init_logger(global_state.exp_dir, args.log_file)
+
+    logging.debug(args)
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    model = get_model(args, global_state.exp_dir)
+    decoder_cls, decoder_kwargs = get_decoder(args)
+
+    model = get_model(args, decoder_cls, decoder_kwargs, global_state.exp_dir)
 
     train_loader = get_train_loader(args, model)
 
     dev_loader = get_dev_loader(args, model)
 
-    best_loss = float('inf')
-    best_epoch = None
+    if train_loader is not None:
+        for epoch in range(model.completed_epochs, args.n_epochs):
+            maybe_eval(model, dev_loader, args.dev_log)
+            model.train(train_loader)
+            _save_model(args.model, model, args.exp_dir)
 
-    for epoch in range(model.completed_epochs, args.n_epochs):
-        model.train(train_loader)
-        mean_loss = model.eval_loss(dev_loader)
+    maybe_eval(model, dev_loader, args.dev_log)
 
-        torch.save(model.state_dict(),
-                   os.path.join(global_state.exp_dir, '%d.pt' % epoch))
 
-        if mean_loss < best_loss:
-            best_loss = mean_loss
-            best_epoch = epoch
+def maybe_eval(model, dev_loader, dev_log):
+    """Evaluates `model` on `dev_loader` for each statistic in `dev_log`.
 
-    if best_epoch is not None:
-        model.load_state_dict(torch.load(os.path.join(global_state.exp_dir,
-                                                      '%d.pt' % best_epoch)))
-
-    model.eval_wer(dev_loader)
+    Args:
+        model: A `deepspeech.models.Model`.
+        dev_loader (optional): A `torch.utils.data.DataLoader`. If `None`,
+            evaluation is skipped.
+        dev_log (optional): A list of strings, where each string refers to the
+            name of a statistic to compute. Each statistic will be computed at
+            most once. Supported statistics: ['loss', 'wer'].
+    """
+    if dev_loader is not None:
+        for stat in set(dev_log):
+            if stat == 'loss':
+                model.eval_loss(dev_loader)
+            elif stat == 'wer':
+                model.eval_wer(dev_loader)
+            else:
+                raise ValueError('unknown evaluation stat request: %r' % stat)
 
 
 def get_parser():
+    """Returns an `argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
         description='train and evaluate a DeepSpeech or DeepSpeech2 network',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -78,13 +102,16 @@ def get_parser():
                              'see `deepspeech.global_state.GlobalState`')
 
     parser.add_argument('--log_file',
+                        nargs='?',
                         default='log.txt',
-                        help='filename to use for log file')
+                        const=None,
+                        help='filename to use for log file - logs written to '
+                             'stderr if empty')
 
     # model -------------------------------------------------------------------
 
     parser.add_argument('model',
-                        choices=['ds', 'ds2'],
+                        choices=MODEL_CHOICES,
                         help='model to train')
 
     parser.add_argument('--state_dict_path',
@@ -101,13 +128,9 @@ def get_parser():
     # decoder -----------------------------------------------------------------
 
     parser.add_argument('--decoder',
-                        default='beam',
+                        default='greedy',
                         choices=['beam', 'greedy'],
-                        help='decoder to use - if equal to the model\'s '
-                             'DEFAULT_DECODER_CLS then the model\'s '
-                             'DEFAULT_DECODER_KWARGS are used for '
-                             'initialisation. Other decoder-specific flags '
-                             ' will (over)write entries if not None')
+                        help='decoder to use')
 
     parser.add_argument('--lm_path',
                         default=None,
@@ -150,7 +173,7 @@ def get_parser():
                         default=TRAIN_SUBSETS,
                         choices=TRAIN_SUBSETS,
                         help='LibriSpeech subsets to train on',
-                        nargs='+')
+                        nargs='*')
 
     parser.add_argument('--train_batch_size',
                         default=16,
@@ -164,17 +187,23 @@ def get_parser():
 
     # validation
 
-    parser.add_argument('--dev_batch_size',
-                        default=16,
-                        type=int,
-                        help='number of samples in a validation batch')
+    parser.add_argument('--dev_log',
+                        default=['loss', 'wer'],
+                        choices=['loss', 'wer'],
+                        nargs='*',
+                        help='validation statistics to log')
 
     parser.add_argument('--dev_subsets',
                         default=['dev-clean', 'dev-other'],
                         choices=['dev-clean', 'dev-other',
                                  'test-clean', 'test-other'],
                         help='LibriSpeech subsets to evaluate loss and WER on',
-                        nargs='+')
+                        nargs='*')
+
+    parser.add_argument('--dev_batch_size',
+                        default=16,
+                        type=int,
+                        help='number of samples in a validation batch')
 
     parser.add_argument('--dev_num_workers',
                         default=4,
@@ -193,25 +222,36 @@ def get_parser():
     return parser
 
 
-def init_logger(args, exp_dir):
+def init_logger(exp_dir, log_file):
+    """Initialises the `logging.Logger`."""
     logger = logging.getLogger()
 
-    handler = logging.FileHandler(os.path.join(exp_dir, args.log_file))
     formatter = logging.Formatter(fmt='%(asctime)s - %(name)s - %(funcName)s -'
                                       ' %(levelname)s: %(message)s')
+
+    if log_file is not None:
+        handler = logging.FileHandler(os.path.join(exp_dir, log_file))
+    else:
+        handler = logging.StreamHandler()
+
     handler.setFormatter(formatter)
 
     logger.addHandler(handler)
 
     logger.setLevel(logging.DEBUG)
 
-    logger.debug(args)
 
+def get_model(args, decoder_cls, decoder_kwargs, exp_dir):
+    """Returns a `deepspeech.models.Model`.
 
-def get_model(args, exp_dir):
-    model_cls = {'ds': DeepSpeech, 'ds2': DeepSpeech2}[args.model]
-
-    decoder_cls, decoder_kwargs = get_decoder(args, model_cls)
+    Args:
+        args: An `argparse.Namespace` for the `argparse.ArgumentParser`
+            returned by `get_parser`.
+        decoder_cls: See `deepspeech.models.Model`.
+        decoder_kwargs: See `deepspeech.models.Model`.
+        exp_dir: path to directory where all experimental data will be stored.
+    """
+    model_cls = {'ds1': DeepSpeech, 'ds2': DeepSpeech2}[args.model]
 
     model = model_cls(optimiser_cls=torch.optim.Adam,
                       optimiser_kwargs={'lr': args.learning_rate},
@@ -220,24 +260,32 @@ def get_model(args, exp_dir):
 
     state_dict_path = args.state_dict_path
     if state_dict_path is None and not args.no_resume_from_exp_dir:
-        state_dict_path = _get_last_state_dict_path(exp_dir)
+        # Restore from last saved `state_dict` in `exp_dir`.
+        state_dict_path = _get_last_state_dict_path(args.model, exp_dir)
+
     if state_dict_path is not None:
-        logger = logging.getLogger()
-        logger.debug('restoring state_dict at %s' % state_dict_path)
+        # Restore from user-specified `state_dict`.
+        logging.debug('restoring state_dict at %s' % state_dict_path)
         model.load_state_dict(torch.load(state_dict_path))
+    else:
+        logging.debug('using randomly initialised model')
+        _save_model(args.model, model, exp_dir)
 
     return model
 
 
-def get_decoder(args, model_cls):
-    decoder_kwargs = {'alphabet': model_cls.ALPHABET,
-                      'blank_symbol': model_cls.BLANK_SYMBOL}
+def get_decoder(args):
+    """Returns a `deepspeech.decoder.Decoder`.
+
+    Args:
+        args: An `argparse.Namespace` for the `argparse.ArgumentParser`
+            returned by `get_parser`.
+    """
+    decoder_kwargs = {'alphabet': Model.ALPHABET,
+                      'blank_symbol': Model.BLANK_SYMBOL}
 
     if args.decoder == 'beam':
         decoder_cls = BeamCTCDecoder
-
-        if decoder_cls == model_cls.DEFAULT_DECODER_CLS:
-            decoder_kwargs = model_cls.DEFAULT_DECODER_KWARGS
 
         if args.lm_weight is not None:
             decoder_kwargs['alpha'] = args.lm_weight
@@ -251,9 +299,6 @@ def get_decoder(args, model_cls):
     elif args.decoder == 'greedy':
         decoder_cls = GreedyCTCDecoder
 
-        if decoder_cls == model_cls.DEFAULT_DECODER_CLS:
-            decoder_kwargs = model_cls.DEFAULT_DECODER_KWARGS
-
         beam_args = ['lm_weight', 'word_weight', 'beam_width', 'lm_path']
         for arg in beam_args:
             if getattr(args, arg) is not None:
@@ -263,21 +308,77 @@ def get_decoder(args, model_cls):
     return decoder_cls, decoder_kwargs
 
 
-def _get_last_state_dict_path(exp_dir):
-    last_epoch = -1
+def all_state_dicts(model_str, exp_dir):
+    """Returns a dict of (epoch, filename) for all state_dicts in `exp_dir`.
+
+    Args:
+        model_str: Model whose state_dicts to consider.
+        exp_dir: path to directory where all experimental data will be stored.
+    """
+    state_dicts = {}
+
     for f in os.listdir(exp_dir):
-        match = re.match('([0-9]+).pt', f)
+        match = re.match('(%s-([0-9]+).pt)' % model_str, f)
         if not match:
             continue
-        epoch = int(match.groups()[0])
-        if epoch > last_epoch:
-            last_epoch = epoch
-    if last_epoch == -1:
+
+        groups = match.groups()
+        name = groups[0]
+        epoch = groups[1]
+
+        state_dicts[epoch] = name
+
+    return state_dicts
+
+
+def _get_last_state_dict_path(model_str, exp_dir):
+    """Returns the absolute path of the last state_dict in `exp_dir` or `None`.
+
+    Args:
+        model_str: Model whose state_dicts to consider.
+        exp_dir: path to directory where all experimental data will be stored.
+    """
+    state_dicts = all_state_dicts(model_str, exp_dir)
+
+    if len(state_dicts) == 0:
         return None
-    return os.path.join(exp_dir, '%d.pt' % last_epoch)
+
+    last_epoch = sorted(state_dicts.keys())[-1]
+
+    return os.path.join(exp_dir, state_dicts[last_epoch])
+
+
+def _save_model(model_str, model, exp_dir):
+    """Saves the model's `state_dict` in `exp_dir`.
+
+    Args:
+        model_str: Argument name of `model`.
+        model: A `deepspeech.models.Model`.
+        exp_dir: path to directory where the `model`'s `state_dict` will be
+            stored.
+    """
+    save_name = '%s-%d.pt' % (model_str, model.completed_epochs)
+    save_path = os.path.join(exp_dir, save_name)
+    torch.save(model.state_dict(), save_path)
 
 
 def get_train_loader(args, model):
+    """Returns a `torch.nn.DataLoader over the training data.
+
+    Args:
+        args: An `argparse.Namespace` for the `argparse.ArgumentParser`
+            returned by `get_parser`.
+        model: A `deepspeech.models.Model`.
+    """
+    if len(args.train_subsets) == 0:
+        logging.debug('no `train_subsets` specified')
+        return
+
+    todo_epochs = args.n_epochs - model.completed_epochs
+    if todo_epochs <= 0:
+        logging.debug('`n_epochs` <= `model.completed_epochs`')
+        return
+
     train_cache = os.path.join(args.cachedir, 'train')
     train_dataset = LibriSpeech(root=train_cache,
                                 subsets=args.train_subsets,
@@ -294,6 +395,21 @@ def get_train_loader(args, model):
 
 
 def get_dev_loader(args, model):
+    """Returns a `torch.nn.DataLoader over the validation data.
+
+    Args:
+        args: An `argparse.Namespace` for the `argparse.ArgumentParser`
+            returned by `get_parser`.
+        model: A `deepspeech.models.Model`.
+    """
+    if len(args.dev_subsets) == 0:
+        logging.debug('no `dev_subsets` specified')
+        return
+
+    if len(args.dev_log) == 0:
+        logging.debug('no `dev_log` statistics specified')
+        return
+
     dev_cache = os.path.join(args.cachedir, 'dev')
     dev_dataset = LibriSpeech(root=dev_cache,
                               subsets=args.dev_subsets,

@@ -3,7 +3,6 @@ import torch
 from torchvision.transforms import Compose
 
 from deepspeech.data import preprocess
-from deepspeech.decoder import BeamCTCDecoder
 from deepspeech.models.model import Model
 from deepspeech.networks.deepspeech2 import Network
 
@@ -26,13 +25,6 @@ class DeepSpeech2(Model):
     Attributes:
         See base class.
     """
-
-    DEFAULT_DECODER_CLS = BeamCTCDecoder
-    DEFAULT_DECODER_KWARGS = {'alphabet': Model.ALPHABET,
-                              'blank_symbol': Model.BLANK_SYMBOL,
-                              'alpha': 1.0,
-                              'beta': 1.0,
-                              'beam_width': 1024}
 
     def __init__(self, optimiser_cls=None, optimiser_kwargs=None,
                  decoder_cls=None, decoder_kwargs=None, n_hidden=800,
