@@ -27,8 +27,8 @@ class DeepSpeech2(Model):
     """
 
     def __init__(self, optimiser_cls=None, optimiser_kwargs=None,
-                 decoder_cls=None, decoder_kwargs=None, n_hidden=800,
-                 rnn_layers=5, winlen=0.02, winstep=0.01, sample_rate=16000,
+                 decoder_cls=None, decoder_kwargs=None, n_hidden=2560,
+                 rnn_layers=3, winlen=0.02, winstep=0.01, sample_rate=16000,
                  clip_gradients=400):
 
         self._n_hidden = n_hidden
@@ -52,7 +52,8 @@ class DeepSpeech2(Model):
                        out_features=len(self.ALPHABET),
                        rnn_type='gru',
                        rnn_layers=self._rnn_layers,
-                       bidirectional=True)
+                       bidirectional=False,
+                       bn_between_rnns=False)
 
     @property
     def transform(self):

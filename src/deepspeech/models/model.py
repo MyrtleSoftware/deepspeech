@@ -1,5 +1,4 @@
 import copy
-import logging
 import psutil
 import time
 
@@ -20,8 +19,8 @@ _BLANK_SYMBOL = '_'
 
 
 def _gen_alphabet():
-    symbols = list(" abcdefghijklmnopqrstuvwxyz'")
-    symbols.append(_BLANK_SYMBOL)
+    symbols = [_BLANK_SYMBOL]
+    symbols.extend("'abcdefghijklmnopqrstuvwxyz ")
     return Alphabet(symbols)
 
 

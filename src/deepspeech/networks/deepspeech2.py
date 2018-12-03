@@ -39,7 +39,8 @@ class Network(nn.Module):
     """
 
     def __init__(self, in_features, n_hidden, out_features, rnn_type='lstm',
-                 bidirectional=True, rnn_layers=5, context=20, relu_clip=20.0):
+                 bidirectional=True, rnn_layers=5, context=20, relu_clip=20.0,
+                 bn_between_rnns=True):
         super().__init__()
         self._relu_clip = relu_clip
 
@@ -51,7 +52,8 @@ class Network(nn.Module):
                          rnn_layers=rnn_layers,
                          rnn_type=SUPPORTED_RNNS[rnn_type],
                          bidirectional=bidirectional,
-                         context=context)
+                         context=context,
+                         bn_between_rnns=bn_between_rnns)
 
         fully_connected = nn.Sequential(
             nn.BatchNorm1d(n_hidden),
@@ -109,22 +111,18 @@ class Network(nn.Module):
         return int(rnn_input_size)
 
     def _rnn_layers(self, in_features, n_hidden, rnn_layers, rnn_type,
-                    bidirectional, context):
+                    bidirectional, context, bn_between_rnns):
         rnns = OrderedDict()
         for i in range(rnn_layers):
             rnn = RNNWrapper(input_size=in_features,
                              hidden_size=n_hidden,
                              rnn_type=rnn_type,
                              bidirectional=bidirectional,
-                             batch_norm=i > 0)
+                             batch_norm=i > 0 and bn_between_rnns,
+                             bias=not bn_between_rnns)
             rnns[str(i)] = rnn
             in_features = n_hidden
         self.rnns = nn.Sequential(rnns)
-
-        if not bidirectional:
-            self.lookahead = nn.Sequential(
-                Lookahead(n_hidden, context=context),
-                nn.Hardtanh(0, self._relu_clip, inplace=True))
 
     def forward(self, x):
         """Computes a single forward pass through the network.
@@ -145,15 +143,12 @@ class Network(nn.Module):
         x = x.permute(2, 0, 1)   # NxHxT -> TxNxH
         x = self.rnns(x.contiguous())
 
-        if hasattr(self, 'lookahead'):
-            x = self.lookahead(x)
-
         return self.fc(x)
 
 
 class RNNWrapper(nn.Module):
     def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM,
-                 bidirectional=False, batch_norm=True):
+                 bidirectional=False, batch_norm=True, bias=False):
         """Bias-free RNN wrapper with optional batch norm and bidir summation.
 
         Instantiates an RNN without bias parameters. Optionally applies a batch
@@ -168,7 +163,7 @@ class RNNWrapper(nn.Module):
         self.rnn = rnn_type(input_size=input_size,
                             hidden_size=hidden_size,
                             bidirectional=bidirectional,
-                            bias=False)
+                            bias=bias)
 
     def forward(self, x):
         if hasattr(self, 'batch_norm'):
@@ -180,59 +175,5 @@ class RNNWrapper(nn.Module):
             x = x.view(seq_len, batch_size, 2, -1) \
                  .sum(dim=2) \
                  .view(seq_len, batch_size, -1)
+
         return x
-
-
-class Lookahead(nn.Module):
-    """Wang et al 2016: Lookahead Conv. Layer for Unidir. Rec. Neural Nets.
-
-    (31/07/2018, sam) This should be updated as it looks old but we aren't
-    using it.
-    """
-    def __init__(self, n_features, context):
-        # should we handle batch_first=True?
-        super(Lookahead, self).__init__()
-        self.n_features = n_features
-        self.weight = Parameter(torch.Tensor(n_features, context + 1))
-        assert context > 0
-        self.context = context
-        self.register_parameter('bias', None)
-        self.init_parameters()
-
-    def init_parameters(self):  # what's a better way initialiase this layer?
-        stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-stdv, stdv)
-
-    def forward(self, input):
-        """
-        Args:
-            input: size [seq_len, batch_size, num_features]
-
-        Returns:
-            output shape - same as input
-        """
-
-        seq_len = input.size(0)
-        # pad the 0th dimension (T/sequence) with zeroes whose number = context
-        # Once pytorch's padding functions have settled, should move to those.
-        padding = torch.zeros(self.context, *(input.size()[1:])) \
-                       .type_as(input.data)
-        x = torch.cat((input, Variable(padding)), 0)
-
-        # add lookahead windows (with context+1 width) as a fourth dimension
-        # for each seq-batch-feature combination
-
-        # TxLxNxH - sequence, context, batch, feature
-        x = [x[i:i + self.context + 1] for i in range(seq_len)]
-        x = torch.stack(x)
-
-        # TxNxHxL - sequence, batch, feature, context
-        x = x.permute(0, 2, 3, 1)
-
-        x = torch.mul(x, self.weight).sum(dim=3)
-        return x
-
-    def __repr__(self):
-        return self.__class__.__name__ + '(' \
-               + 'n_features=' + str(self.n_features) \
-               + ', context=' + str(self.context) + ')'
