@@ -1,6 +1,6 @@
 FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
 
-LABEL maintainer="sam@myrtle.ai"
+LABEL maintainer="mlperf@myrtle.ai"
 
 #- Upgrade system and install dependencies -------------------------------------
 RUN apt-get update && \

@@ -122,4 +122,4 @@ Compared to the pseudocode version given above:
 
 ## Maintainer
 
-Please contact `sam at myrtle dot ai`.
+Please contact `mlperf at myrtle dot ai`.
