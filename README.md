@@ -65,7 +65,7 @@ By default the experimental data and logs are output to
 A Deep Speech evaluation run can be started by the following command, adding
 flags as necessary:
 
-```python
+```
 deepspeech ds1 \
            --state_dict_path $MODEL_PATH \
            --log_file \
