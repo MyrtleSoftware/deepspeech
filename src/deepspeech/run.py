@@ -266,7 +266,8 @@ def get_model(args, decoder_cls, decoder_kwargs, exp_dir):
     if state_dict_path is not None:
         # Restore from user-specified `state_dict`.
         logging.debug('restoring state_dict at %s' % state_dict_path)
-        model.load_state_dict(torch.load(state_dict_path))
+        map_location = 'cpu' if not torch.cuda.is_available() else None
+        model.load_state_dict(torch.load(state_dict_path, map_location))
     else:
         logging.debug('using randomly initialised model')
         _save_model(args.model, model, exp_dir)
