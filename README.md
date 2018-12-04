@@ -42,12 +42,16 @@ or as a Python package:
 import deepspeech
 ```
 
-## Example Training:
+## Examples
 
 `deepspeech --help` will print the configurable parameters (batch size,
 learning rate, log location, number of epochs...) - it aims to have reasonably
-sensible defaults. A Deep Speech training run can be started by the following
-command, adding flags as necessary:
+sensible defaults.
+
+### Training
+
+A Deep Speech training run can be started by the following command, adding
+flags as necessary:
 
 ```
 deepspeech ds1
@@ -55,6 +59,25 @@ deepspeech ds1
 
 By default the experimental data and logs are output to
 `/tmp/experiments/year_month_date-hour_minute_second_microsecond`.
+
+### Inference
+
+A Deep Speech evaluation run can be started by the following command, adding
+flags as necessary:
+
+```python
+deepspeech ds1 \
+           --state_dict_path $MODEL_PATH \
+           --log_file \
+           --decoder greedy \
+           --train_subsets \
+           --dev_log wer \
+           --dev_subsets dev-clean \
+           --dev_batch_size 1
+```
+
+Note the lack of an argument to `--log_file` causes the WER results to be
+written to stderr.
 
 ## Dataset
 
